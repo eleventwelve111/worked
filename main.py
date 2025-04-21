@@ -13,7 +13,19 @@ from datetime import datetime
 
 # Local imports
 from logging import setup_logging, log_info, log_error, log_warning
-from config import load_config, save_config
+# Note: These functions need to be defined in config.py
+from config import RESULTS_DIR  # Added existing import
+# Create these functions in config.py
+def load_config(config_file):
+    """Load configuration from file"""
+    with open(config_file, 'r') as f:
+        return json.load(f)
+
+def save_config(config, filename):
+    """Save configuration to file"""
+    with open(filename, 'w') as f:
+        json.dump(config, f, indent=2)
+        
 from requirement import check_system_requirements, validate_config, validate_simulation_parameters, suggest_optimization
 from geometry import create_geometry
 from materials import create_materials
@@ -180,170 +192,171 @@ def main():
 
                 log_warning("Continuing despite system requirement issues...")
 
-                # If only validating, exit
-                if args.validate_only:
-                    log_info("Configuration validation completed. Exiting.")
-                    return 0
+        # If only validating, exit
+        if args.validate_only:
+            log_info("Configuration validation completed. Exiting.")
+            return 0
 
-                # Suggest optimizations
-                suggestions = suggest_optimization(config)
-                if suggestions:
-                    log_info("Optimization suggestions:")
-                    for suggestion in suggestions:
-                        log_info(f"  - {suggestion}")
+        # Suggest optimizations
+        suggestions = suggest_optimization(config)
+        if suggestions:
+            log_info("Optimization suggestions:")
+            for suggestion in suggestions:
+                log_info(f"  - {suggestion}")
 
-                # Save working configuration
-                config_backup = os.path.join(dirs['data'], 'working_config.json')
-                save_config(config, config_backup)
-                log_info(f"Saved working configuration to: {config_backup}")
+        # Save working configuration
+        config_backup = os.path.join(dirs['data'], 'working_config.json')
+        save_config(config, config_backup)
+        log_info(f"Saved working configuration to: {config_backup}")
 
-                # Create simulation components
-                log_info("Creating simulation components...")
+        # Create simulation components
+        log_info("Creating simulation components...")
 
-                # Create geometry
-                geometry = create_geometry(config.get('geometry', {}))
-                log_info("Geometry created successfully")
+        # Create geometry
+        geometry = create_geometry(config.get('geometry', {}))
+        log_info("Geometry created successfully")
 
-                # Create materials
-                materials = create_materials(config.get('materials', {}))
-                log_info("Materials created successfully")
+        # Create materials
+        materials = create_materials(config.get('materials', {}))
+        log_info("Materials created successfully")
 
-                # Create source
-                source = create_source(config.get('source', {}))
-                log_info("Source created successfully")
+        # Create source
+        source = create_source(config.get('source', {}))
+        log_info("Source created successfully")
 
-                # Create tallies
-                tallies = create_tallies(config.get('tally', {}))
-                log_info("Tallies created successfully")
+        # Create tallies
+        tallies = create_tallies(config.get('tally', {}))
+        log_info("Tallies created successfully")
+
+        # Run simulation
+        log_info("Starting simulation...")
+        simulation_results = run_simulation(
+            geometry=geometry,
+            materials=materials,
+            source=source,
+            tallies=tallies,
+            params=config.get('simulation', {}),
+            output_dir=dirs['data']
+        )
+        log_info("Simulation completed successfully")
+
+        # Calculate dose rates
+        log_info("Calculating dose rates...")
+        dose_results = calculate_dose_rates(
+            simulation_results,
+            config.get('dose', {}),
+            output_dir=dirs['data']
+        )
+        log_info("Dose calculation completed")
+
+        # Analyze spectrum
+        log_info("Analyzing energy spectrum...")
+        spectrum_results = analyze_spectrum(
+            simulation_results,
+            config.get('spectrum_analysis', {}),
+            output_dir=dirs['data']
+        )
+        log_info("Spectrum analysis completed")
+
+        # Combine results
+        all_results = {
+            'simulation': simulation_results,
+            'dose': dose_results,
+            'spectrum': spectrum_results
+        }
+
+        # Run parallel simulations if configured
+        parallel_results = {}
+        if 'parallel_configs' in config:
+            log_info("Running parallel simulations...")
+
+            for idx, parallel_config in enumerate(config['parallel_configs']):
+                log_info(f"Starting parallel simulation {idx + 1}...")
+
+                # Create components for this parallel sim
+                p_geometry = create_geometry(parallel_config.get('geometry', {}))
+                p_materials = create_materials(parallel_config.get('materials', {}))
+                p_source = create_source(parallel_config.get('source', {}))
+                p_tallies = create_tallies(parallel_config.get('tally', {}))
 
                 # Run simulation
-                log_info("Starting simulation...")
-                simulation_results = run_simulation(
-                    geometry=geometry,
-                    materials=materials,
-                    source=source,
-                    tallies=tallies,
-                    params=config.get('simulation', {}),
-                    output_dir=dirs['data']
+                p_results = run_simulation(
+                    geometry=p_geometry,
+                    materials=p_materials,
+                    source=p_source,
+                    tallies=p_tallies,
+                    params=parallel_config.get('simulation', {}),
+                    output_dir=os.path.join(dirs['data'], f'parallel_{idx + 1}')
                 )
-                log_info("Simulation completed successfully")
 
-                # Calculate dose rates
-                log_info("Calculating dose rates...")
-                dose_results = calculate_dose_rates(
-                    simulation_results,
-                    config.get('dose', {}),
-                    output_dir=dirs['data']
+                # Calculate dose
+                p_dose = calculate_dose_rates(
+                    p_results,
+                    parallel_config.get('dose', {}),
+                    output_dir=os.path.join(dirs['data'], f'parallel_{idx + 1}')
                 )
-                log_info("Dose calculation completed")
 
-                # Analyze spectrum
-                log_info("Analyzing energy spectrum...")
-                spectrum_results = analyze_spectrum(
-                    simulation_results,
-                    config.get('spectrum_analysis', {}),
-                    output_dir=dirs['data']
-                )
-                log_info("Spectrum analysis completed")
-
-                # Combine results
-                all_results = {
-                    'simulation': simulation_results,
-                    'dose': dose_results,
-                    'spectrum': spectrum_results
+                # Store results
+                parallel_results[f'config_{idx + 1}'] = {
+                    'simulation': p_results,
+                    'dose': p_dose,
+                    'parameters': parallel_config
                 }
 
-                # Run parallel simulations if configured
-                parallel_results = {}
-                if 'parallel_configs' in config:
-                    log_info("Running parallel simulations...")
+            # Compare spectra if multiple simulations exist
+            if len(parallel_results) > 1:
+                log_info("Comparing spectra from parallel simulations...")
+                spectra = [v['simulation'].get('spectrum', None) for v in parallel_results.values()]
+                labels = [f"Config {i + 1}" for i in range(len(spectra))]
 
-                    for idx, parallel_config in enumerate(config['parallel_configs']):
-                        log_info(f"Starting parallel simulation {idx + 1}...")
-
-                        # Create components for this parallel sim
-                        p_geometry = create_geometry(parallel_config.get('geometry', {}))
-                        p_materials = create_materials(parallel_config.get('materials', {}))
-                        p_source = create_source(parallel_config.get('source', {}))
-                        p_tallies = create_tallies(parallel_config.get('tally', {}))
-
-                        # Run simulation
-                        p_results = run_simulation(
-                            geometry=p_geometry,
-                            materials=p_materials,
-                            source=p_source,
-                            tallies=p_tallies,
-                            params=parallel_config.get('simulation', {}),
-                            output_dir=os.path.join(dirs['data'], f'parallel_{idx + 1}')
-                        )
-
-                        # Calculate dose
-                        p_dose = calculate_dose_rates(
-                            p_results,
-                            parallel_config.get('dose', {}),
-                            output_dir=os.path.join(dirs['data'], f'parallel_{idx + 1}')
-                        )
-
-                        # Store results
-                        parallel_results[f'config_{idx + 1}'] = {
-                            'simulation': p_results,
-                            'dose': p_dose,
-                            'parameters': parallel_config
-                        }
-
-                    # Compare spectra if multiple simulations exist
-                    if len(parallel_results) > 1:
-                        log_info("Comparing spectra from parallel simulations...")
-                        spectra = [v['simulation'].get('spectrum', None) for v in parallel_results.values()]
-                        labels = [f"Config {i + 1}" for i in range(len(spectra))]
-
-                        comparison_results = compare_spectra(
-                            spectra,
-                            labels,
-                            output_dir=dirs['plots']
-                        )
-                        all_results['spectrum_comparison'] = comparison_results
-
-                # Add parallel results to all results
-                all_results['parallel'] = parallel_results
-
-                # Visualization
-                log_info("Generating visualizations...")
-                viz_results = visualize_results(
-                    all_results,
-                    config,
+                comparison_results = compare_spectra(
+                    spectra,
+                    labels,
                     output_dir=dirs['plots']
                 )
-                all_results['visualization'] = viz_results
-                log_info("Visualization completed")
+                all_results['spectrum_comparison'] = comparison_results
 
-                # Generate reports
-                log_info("Generating reports...")
-                report_formats = args.report_formats.split(',')
-                report_results = generate_report(
-                    all_results,
-                    output_dir=dirs['reports'],
-                    formats=report_formats
-                )
+        # Add parallel results to all results
+        all_results['parallel'] = parallel_results
 
-                # Log report file paths
-                for fmt, path in report_results.items():
-                    log_info(f"Generated {fmt.upper()} report: {path}")
+        # Visualization
+        log_info("Generating visualizations...")
+        viz_results = visualize_results(
+            all_results,
+            config,
+            output_dir=dirs['plots']
+        )
+        all_results['visualization'] = viz_results
+        log_info("Visualization completed")
 
-                # Calculate execution time
-                end_time = time.time()
-                execution_time = end_time - start_time
-                log_info(f"Total execution time: {execution_time:.2f} seconds")
+        # Generate reports
+        log_info("Generating reports...")
+        report_formats = args.report_formats.split(',')
+        report_results = generate_report(
+            all_results,
+            output_dir=dirs['reports'],
+            formats=report_formats
+        )
 
-                log_info("=" * 50)
-                log_info("SIMULATION COMPLETED SUCCESSFULLY")
-                log_info("=" * 50)
+        # Log report file paths
+        for fmt, path in report_results.items():
+            log_info(f"Generated {fmt.upper()} report: {path}")
 
-                return 0
+        # Calculate execution time
+        end_time = time.time()
+        execution_time = end_time - start_time
+        log_info(f"Total execution time: {execution_time:.2f} seconds")
 
-            except Exception as e:
-            log_error(f"Error in simulation: {e}", exc_info=True)
-            return 1
+        log_info("=" * 50)
+        log_info("SIMULATION COMPLETED SUCCESSFULLY")
+        log_info("=" * 50)
 
-        if __name__ == "__main__":
-            sys.exit(main())
+        return 0
+
+    except Exception as e:
+        log_error(f"Error in simulation: {e}", exc_info=True)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
